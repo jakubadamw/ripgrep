@@ -1325,16 +1325,7 @@ impl Worker {
                     return;
                 }
             }
-            let readdir = match work.read_dir() {
-                Ok(readdir) => readdir,
-                Err(err) => {
-                    if (self.f)(Err(err)).is_quit() {
-                        self.quit_now();
-                        return;
-                    }
-                    continue;
-                }
-            };
+
             let descend = if let Some(root_device) = work.root_device {
                 match is_same_file_system(root_device, work.dent.path()) {
                     Ok(true) => true,
@@ -1352,6 +1343,7 @@ impl Worker {
             };
 
             let depth = work.dent.depth();
+            let readdir = work.read_dir();
             match (self.f)(Ok(work.dent)) {
                 WalkState::Continue => {}
                 WalkState::Skip => continue,
@@ -1363,6 +1355,18 @@ impl Worker {
             if !descend {
                 continue;
             }
+
+            let readdir = match readdir {
+                Ok(readdir) => readdir,
+                Err(err) => {
+                    if (self.f)(Err(err)).is_quit() {
+                        self.quit_now();
+                        return;
+                    }
+                    continue;
+                }
+            };
+
             if self.max_depth.map_or(false, |max| depth >= max) {
                 continue;
             }
@@ -2070,5 +2074,43 @@ mod tests {
         let mut builder = WalkBuilder::new(td.path());
         builder.follow_links(true).same_file_system(true);
         assert_paths(td.path(), &builder, &["same_file", "same_file/alink"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn chmod<P: AsRef<Path>>(path: P, mode: libc::mode_t) -> Result<(), std::io::Error> {
+        use std::os::unix::ffi::OsStringExt;
+        let bytes = path.as_ref().as_os_str().to_os_string().into_vec();
+        let cstring = std::ffi::CString::new(bytes).unwrap();
+        let ret = unsafe { libc::chmod(cstring.as_ptr(), mode) };
+        if ret < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn no_read_permissions() {
+        struct ChmodOnDrop(std::path::PathBuf, libc::mode_t);
+
+        impl Drop for ChmodOnDrop {
+            fn drop(&mut self) {
+                chmod(&self.0, self.1).unwrap();
+            }
+        }
+
+        let td = tmpdir();
+        let dir_path = td.path().join("a");
+        mkdirp(&dir_path);
+        wfile_size(dir_path.join("foo"), 0);
+
+        {
+            chmod(&dir_path, 0).unwrap();
+            let _chmod_on_drop = ChmodOnDrop(dir_path, libc::S_IRUSR | libc::S_IWUSR | libc::S_IXUSR);
+
+            let builder = WalkBuilder::new(td.path());
+            assert_paths(td.path(), &builder, &["a"]);
+        }
     }
 }
