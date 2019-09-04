@@ -28,9 +28,6 @@ same-file = "1.0.4"
 thread_local = "0.3.6"
 walkdir = "2.2.7"
 
-[dev-dependencies]
-libc = "0.2"
-
 [target.'cfg(windows)'.dependencies.winapi-util]
 version = "0.1.2"
 

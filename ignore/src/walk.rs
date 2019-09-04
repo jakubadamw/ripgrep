@@ -1342,8 +1342,14 @@ impl Worker {
                 true
             };
 
-            let depth = work.dent.depth();
+            // Try to read the directory first before we transfer ownership
+            // to the provided closure. Do not unwrap it immediately, though,
+            // as we may receive an `Err` value e.g. in the case when we do not
+            // have sufficient read permissions to list the directory.
+            // In that case we still want to provide the closure with a valid
+            // entry before passing the error value.
             let readdir = work.read_dir();
+            let depth = work.dent.depth();
             match (self.f)(Ok(work.dent)) {
                 WalkState::Continue => {}
                 WalkState::Skip => continue,
@@ -2077,40 +2083,21 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn chmod<P: AsRef<Path>>(path: P, mode: libc::mode_t) -> Result<(), std::io::Error> {
-        use std::os::unix::ffi::OsStringExt;
-        let bytes = path.as_ref().as_os_str().to_os_string().into_vec();
-        let cstring = std::ffi::CString::new(bytes).unwrap();
-        let ret = unsafe { libc::chmod(cstring.as_ptr(), mode) };
-        if ret < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    }
-
     #[test]
-    #[cfg(target_os = "linux")]
     fn no_read_permissions() {
-        struct ChmodOnDrop(std::path::PathBuf, libc::mode_t);
+        let dir_path = Path::new("/etc/sudoers.d");
 
-        impl Drop for ChmodOnDrop {
-            fn drop(&mut self) {
-                chmod(&self.0, self.1).unwrap();
-            }
+        // There's no /etc/sudoers.d, skip the test.
+        if !dir_path.is_dir() {
+            return;
         }
 
-        let td = tmpdir();
-        let dir_path = td.path().join("a");
-        mkdirp(&dir_path);
-        wfile_size(dir_path.join("foo"), 0);
-
-        {
-            chmod(&dir_path, 0).unwrap();
-            let _chmod_on_drop = ChmodOnDrop(dir_path, libc::S_IRUSR | libc::S_IWUSR | libc::S_IXUSR);
-
-            let builder = WalkBuilder::new(td.path());
-            assert_paths(td.path(), &builder, &["a"]);
+        // We're the root, so the test won't check what we want it to.
+        if fs::read_dir(&dir_path).is_ok() {
+            return;
         }
+
+        let builder = WalkBuilder::new(&dir_path);
+        assert_paths(dir_path.parent().unwrap(), &builder, &["sudoers.d"]);
     }
 }
